@@ -1,0 +1,10 @@
+# Intellij
+*.ipr
+*.iml
+*.iws
+.idea/
+
+# Log file
+*.log
+log/
+save/
