@@ -1,9 +1,6 @@
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
-import math
-import numpy as np
-
 
 
 class GCN(nn.Module):
@@ -20,7 +17,7 @@ class GCN(nn.Module):
         '''
         :param x: graph feature/signal - [B, N, C + H_in]
         :param G: support adj matrices - [K, N, N]
-        :return: hidden representation - [B, N, H_out]
+        :return output: hidden representation - [B, N, H_out]
         '''
         # print('x shape',x.shape, 'G shape', G.shape) # x shape torch.Size([64, 207, 65]) G shape torch.Size([6, 207, 207])
         support_list = list()
@@ -46,10 +43,11 @@ class LSTM_Cell(nn.Module):
         '''
         :param G: support adj matrices - [K, N, N]
         :param x_t: graph feature/signal - [B, N, C]
-        :return: c_t: state - [B, N, hidden dimsion]
-        :return: h_t: output - [B, N, hidden dimsion]
+        :param h_pre: previous hidden state - [B, N, H]
+        :param c_pre: previous memory cell internal state - [B, N, H]
+        :return h_t: current hidden state - [B, N, H]
+        :return c_t: current memory cell internal state - [B, N, H]
         '''
-
         # print('x_t shape',x_t.shape, 'h_pre shape', h_pre.shape)
         combined = torch.cat([x_t, h_pre], dim=-1)
         combined_conv = self.conv_gate(G, combined)
@@ -69,8 +67,7 @@ class LSTM_Cell(nn.Module):
         weight = next(self.parameters()).data
         h = (weight.new_zeros(batch_size, self.num_nodes, self.dim_hidden))
         c = (weight.new_zeros(batch_size, self.num_nodes, self.dim_hidden))
-        return h,c
-
+        return h ,c
     
 
 class Encoder(nn.Module):
@@ -78,25 +75,25 @@ class Encoder(nn.Module):
         super(Encoder, self).__init__()
         self.num_nodes = num_nodes
         self.dim_in = dim_in
-        self.hidden_dim = self._extend_for_multilayer(dim_hidden, num_layers)
+        self.dim_hidden = self._extend_for_multilayer(dim_hidden, num_layers)
         self.num_layers = num_layers
 
         self.cell_list = nn.ModuleList()
         for i in range(self.num_layers):
-            cur_input_dim = self.dim_in if i == 0 else self.hidden_dim[i - 1]
+            cur_input_dim = self.dim_in if i == 0 else self.dim_hidden[i - 1]
             self.cell_list.append(LSTM_Cell(num_nodes=num_nodes,
                                             dim_in=cur_input_dim,
-                                            dim_hidden=self.hidden_dim[i],
+                                            dim_hidden=self.dim_hidden[i],
                                             cheb_k=cheb_k))
             
     def forward(self, G, x_seq, init_h, init_c):
         '''
         :param G: support adj matrices - [K, N, N]
         :param x_seq: graph feature/signal - [B, T, N, C]
-        :param init_h: init output - [B, N, H]*num_layers
-        :param init_c: init state - [B, N, H]*num_layers
-        :return: output_h: output - [B, N, H]*num_layers
-        :return: output_c: state - [B, N, H]*num_layers
+        :param init_h: init hidden state - [B, N, H]*num_layers
+        :param init_c: init memory cell internal state - [B, N, H]*num_layers
+        :return output_h: the last hidden state - [B, N, H]*num_layers
+        :return output_c: the last memory cell internal state - [B, N, H]*num_layers
         '''
         batch_size, seq_len = x_seq.shape[:2]
         if init_h is None:
@@ -107,8 +104,6 @@ class Encoder(nn.Module):
         output_h,output_c = [], []
         for i in range(self.num_layers):
             h,c = init_h[i], init_c[i] 
-            # print(i, 'layer, ', 'input shape', current_inputs.shape)
-            # print('h shape: ', h.shape, 'c shape', c.shape)
             h_lst, c_lst = [], []
             for t in range(seq_len):
                 h, c = self.cell_list[i](G, current_inputs[:, t, :, :], h, c) 
@@ -136,39 +131,41 @@ class Encoder(nn.Module):
     
 
 class Decoder(nn.Module):
-    def __init__(self, node_num, out_horizon, out_dim, hidden_dim, cheb_k, num_layers=1):
+    def __init__(self, num_nodes, dim_out, dim_hidden, cheb_k, num_layers=1):
         super(Decoder, self).__init__()
-        self.node_num = node_num
-        self.out_dim = out_dim
-        self.hidden_dim = self._extend_for_multilayer(hidden_dim, num_layers)
+        self.num_nodes = num_nodes
+        self.dim_out = dim_out
+        self.dim_hidden = self._extend_for_multilayer(dim_hidden, num_layers)
         self.num_layers = num_layers
         self.cell_list = nn.ModuleList()
         for i in range(self.num_layers):
-            cur_input_dim = self.out_dim if i == 0 else self.hidden_dim[i - 1]
-            self.cell_list.append(LSTM_Cell(num_nodes=node_num,
+            cur_input_dim = self.dim_out if i == 0 else self.dim_hidden[i - 1]
+            self.cell_list.append(LSTM_Cell(num_nodes=num_nodes,
                                             dim_in=cur_input_dim,
-                                            dim_hidden=self.hidden_dim[i],
+                                            dim_hidden=self.dim_hidden[i],
                                             cheb_k=cheb_k))
     
-    def forward(self,support, xt, h, c):
+    def forward(self, G, x_t, h, c):
         '''
-        :param support: support adj matrices - [K, N, N]
-        :param xt: graph feature/signal - [B, N, C]
-        :param h: last output - [B, N, H]*num_layers
-        :param c: last state - [B, N, H]*num_layers
-        :return: output_h: output - [B, N, H]*num_layers
-        :return: output_c: state - [B, N, H]*num_layers
+        :param G: support adj matrices - [K, N, N]
+        :param x_t: graph feature/signal - [B, N, C]
+        :param h: previous hidden state from the last encoder cell - [B, N, H]*num_layers
+        :param c: previous memory cell internal state from the last encoder cell - [B, N, H]*num_layers
+        :return output: the last hidden state - [B, N, C]
+        :return h_lst: hidden state of each layer - [B, N, H]*num_layers
+        :return c_lst: memory cell internal state of each layer - [B, N, H]*num_layers
         '''
         # print('decoder input shape', xt.shape) # decoder input shape torch.Size([64, 207, 1])
-        current_inputs = xt
-        output_h,output_c = [],[]
+        current_inputs = x_t
+        h_lst, c_lst = [],[]
         for i in range(self.num_layers):
             # print(i, 'layer', 'h_i shape ', h[i].shape, 'c_i shape ', c[i].shape)
-            h_t, c_t = self.cell_list[i](support, current_inputs, h[i], c[i])
-            output_h.append(h_t)
-            output_c.append(c_t)
+            h_t, c_t = self.cell_list[i](G, current_inputs, h[i], c[i])
+            h_lst.append(h_t)
+            c_lst.append(c_t)
             current_inputs = h_t
-        return current_inputs, output_h, output_c
+        output = current_inputs
+        return output, h_lst, c_lst
     
     @staticmethod
     def _extend_for_multilayer(param, num_layers):
@@ -178,31 +175,24 @@ class Decoder(nn.Module):
     
 
 class GCN_LSTM(nn.Module):
-    def __init__(self, device, num_nodes, adj, input_dim, output_dim, horizon, rnn_units, num_layers=1, embed_dim=8, cheb_k=3, ycov_dim=1, cl_decay_steps=2000, use_curriculum_learning=True):
+    def __init__(self, device, num_nodes, adj, input_dim, output_dim, horizon, rnn_units, num_layers=1, cheb_k=3):
         super(GCN_LSTM, self).__init__()
         self.num_nodes = num_nodes
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.horizon = horizon
         self.num_layers = num_layers
-        self.embed_dim = embed_dim
         self.cheb_k = cheb_k
         self.rnn_units = rnn_units
         self.num_layers = num_layers
-        self.ycov_dim = ycov_dim
         self.decoder_dim = self.rnn_units
-        self.cl_decay_steps = cl_decay_steps
-        self.use_curriculum_learning = use_curriculum_learning
         self.P = self.compute_cheby_poly(adj).to(device)  
 
-        # def __init__(self, num_nodes, dim_in, dim_hidden, cheb_k, num_layers=1):
         self.encoder = Encoder(num_nodes=self.num_nodes, dim_in=self.input_dim, dim_hidden=self.rnn_units, cheb_k=self.cheb_k, num_layers=self.num_layers)
-        # def __init__(self, node_num, out_horizon, hidden_dim, cheb_k, num_layers):
-        self.decoder = Decoder(node_num=self.num_nodes, out_horizon=self.horizon, out_dim=self.input_dim,hidden_dim=self.decoder_dim, cheb_k=self.cheb_k, num_layers=self.num_layers)
+        self.decoder = Decoder(num_nodes=self.num_nodes, dim_out=self.input_dim, dim_hidden=self.decoder_dim, cheb_k=self.cheb_k, num_layers=self.num_layers)
         self.proj = nn.Sequential(nn.Linear(self.decoder_dim, self.output_dim))
 
     def compute_cheby_poly(self, P: list):
-        # print('DCRNN compute_cheby_poly P:', P)
         P_k = []
         for p in P:
             p = torch.from_numpy(p).float().T
@@ -220,15 +210,12 @@ class GCN_LSTM(nn.Module):
                                   init_h, init_c) 
 
         deco_input = torch.zeros((x.shape[0], x.shape[2], x.shape[3]),
-                                 device=x.device)  # original initialization
+                                 device=x.device)  # original initialization [B N C]
         outputs = list()
-        # h_t = h_lst[:, -1, :, :]
-        # c_t = c_lst[:, -1, :, :]
         for t in range(self.horizon):
             output, h_lst, c_lst = self.decoder(self.P, deco_input, h_lst, c_lst)
             deco_input = self.proj(output)  # update decoder input
             outputs.append(deco_input) # [B N C]*12
 
         outputs = torch.stack(outputs, dim=1) # B,T,N,C
-        # print('model output:',outputs.shape)
         return outputs
