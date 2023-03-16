@@ -1,10 +1,9 @@
 import sys
 import os
 import shutil
-import math
 import numpy as np
 import pandas as pd
-import scipy.sparse as ss
+# import scipy.sparse as ss
 from datetime import datetime
 import time
 import torch
@@ -16,7 +15,6 @@ import argparse
 import logging
 from metrics import evaluate
 from utils import masked_mae, masked_mae_loss, StandardScaler, getDayTimestamp, load_adj
-from GCRN import GCRN
 from GCN_LSTM import GCN_LSTM
 
 def get_xs_ys(data, mode):
