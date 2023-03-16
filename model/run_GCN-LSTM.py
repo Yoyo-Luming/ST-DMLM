@@ -68,14 +68,11 @@ def print_params(model):
     return
 
 def get_model(mode, adj):
-    # model = GCRN(num_nodes=args.num_nodes, input_dim=args.input_dim, output_dim=args.output_dim, horizon=args.horizon, 
-    #                 rnn_units=args.rnn_units, num_layers=args.num_rnn_layers, cheb_k = args.max_diffusion_step,
-    #                 cl_decay_steps=args.cl_decay_steps, use_curriculum_learning=args.use_curriculum_learning).to(device)
     model = GCN_LSTM(device=args.gpu, adj=adj, num_nodes=args.num_nodes, input_dim=args.input_dim, output_dim=args.output_dim, horizon=args.horizon, 
-                    rnn_units=args.rnn_units, num_layers=args.num_rnn_layers, cheb_k = args.max_diffusion_step,
-                    cl_decay_steps=args.cl_decay_steps, use_curriculum_learning=args.use_curriculum_learning).to(device)
+                    rnn_units=args.rnn_units, num_layers=args.num_rnn_layers, cheb_k = args.max_diffusion_step).to(device)
     if mode == 'train':
-        # summary(model, [args.batch_size, args.input_dim, args.num_nodes, 1], device=device)   
+        # summary(model, [args.batch_size, 12, args.num_nodes, 1], device=device)   
+        summary(model, (args.seq_len, args.num_nodes, args.input_dim), device=device) 
         print_params(model)
         for p in model.parameters():
             if p.dim() > 1:
