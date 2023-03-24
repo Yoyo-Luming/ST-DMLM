@@ -3,7 +3,6 @@ import os
 import shutil
 import numpy as np
 import pandas as pd
-# import scipy.sparse as ss
 from datetime import datetime
 import time
 import torch
@@ -30,7 +29,7 @@ def get_xs_ys(data, mode):
         for i in range(train_num - args.seq_len,  data.shape[0] - args.horizon - args.seq_len + 1):
             x = data[i:i+args.seq_len, ...]
             y = data[i+args.seq_len:i+args.seq_len+args.horizon, ...]
-            xs.append(x), xs.append(y)
+            xs.append(x), ys.append(y)
     xs, ys = np.array(xs), np.array(ys)
     xs, ys = xs[:, :, :, np.newaxis], ys[:, :, :, np.newaxis]
     return xs, ys
@@ -67,7 +66,7 @@ def print_params(model):
 
 def get_model(mode, adj):
     model = GCN_LSTM(device=args.gpu, adj=adj, num_nodes=args.num_nodes, input_dim=args.input_dim, output_dim=args.output_dim, horizon=args.horizon, 
-                    rnn_units=args.rnn_units, num_layers=args.num_rnn_layers, cheb_k = args.max_diffusion_step).to(device)
+                    rnn_units=args.rnn_units, num_layers=args.num_rnn_layers, K = args.max_diffusion_step).to(device)
     if mode == 'train':
         # summary(model, [args.batch_size, 12, args.num_nodes, 1], device=device)   
         summary(model, (args.seq_len, args.num_nodes, args.input_dim), device=device) 
@@ -95,11 +94,11 @@ def evaluate_model(model, data_iter):
     ys_pred = np.vstack(ys_pred)
     return loss, ys_pred
 
-def train_model(name, mode, xs, ys, ycov, adj):
+def train_model(name, mode, xs, ys, adj):
     model = get_model(mode, adj)
     
     xs = scaler.transform(xs)
-    xs_torch, ys_torch, ycov_torch = torch.Tensor(xs).to(device), torch.Tensor(ys).to(device), torch.Tensor(ycov).to(device)
+    xs_torch, ys_torch = torch.Tensor(xs).to(device), torch.Tensor(ys).to(device)
     trainval_data = torch.utils.data.TensorDataset(xs_torch, ys_torch)
     trainval_size = len(trainval_data)
     train_size = int(trainval_size * (1 - args.val_ratio))
@@ -151,19 +150,19 @@ def train_model(name, mode, xs, ys, ycov, adj):
         with open(epochlog_path, 'a') as f:
             f.write("%s, %d, %s, %d, %s, %s, %.6f, %s, %.6f\n" % ("epoch", epoch, "time used", epoch_time, "seconds", "train loss", train_loss, "validation loss:", val_loss))
     
-def test_model(name, mode, xs, ys, ycov, adj):
+def test_model(name, mode, xs, ys, adj):
     model = get_model(mode, adj)
     model.load_state_dict(torch.load(modelpt_path))
     
     xs = scaler.transform(xs)
-    xs_torch, ys_torch, ycov_torch = torch.Tensor(xs).to(device), torch.Tensor(ys).to(device), torch.Tensor(ycov).to(device)
+    xs_torch, ys_torch = torch.Tensor(xs).to(device), torch.Tensor(ys).to(device)
     test_data = torch.utils.data.TensorDataset(xs_torch, ys_torch)
     test_iter = torch.utils.data.DataLoader(test_data, args.batch_size, shuffle=False)
     loss, ys_pred = evaluate_model(model, test_iter)
     logger.info('ys.shape, ys_pred.shape,', ys.shape, ys_pred.shape)
     ys, ys_pred = np.squeeze(ys), np.squeeze(ys_pred)
-    # np.save(path + f'/{name}_prediction.npy', ys_pred)
-    # np.save(path + f'/{name}_groundtruth.npy', ys)
+    np.save(path + f'/{name}_prediction.npy', ys_pred)
+    np.save(path + f'/{name}_groundtruth.npy', ys)
     MSE, RMSE, MAE, MAPE = evaluate(ys, ys_pred)
     logger.info("%s, %s, test loss, %.6f" % (name, mode, loss))
     logger.info("all pred steps, %s, %s, MSE, RMSE, MAE, MAPE, %.6f, %.6f, %.6f, %.6f" % (name, mode, MSE, RMSE, MAE, MAPE))
@@ -210,6 +209,10 @@ if args.dataset == 'METRLA':
     args.num_nodes = 207
 elif args.dataset == 'PEMSBAY':
     data_path = f'../{args.dataset}/pems-bay.h5'
+    adj_path = f'../{args.dataset}/adj_mx_bay.pkl'
+    adj_file_type = "pkl"
+    adj_type = "doubletransition"
+    adj = load_adj(adj_path, adj_file_type, adj_type)    
     args.num_nodes = 325
 else:
     pass # including more datasets in the future    
@@ -282,21 +285,20 @@ device = torch.device("cuda:{}".format(args.gpu)) if torch.cuda.is_available() e
 #####################################################################################################
 
 data = pd.read_hdf(data_path).values
-data_time = getDayTimestamp(pd.read_hdf(data_path))
 mean = np.mean(data[:int(data.shape[0]*args.trainval_ratio)])
 std = np.std(data[:int(data.shape[0]*args.trainval_ratio)])
 scaler = StandardScaler(mean, std)
 
 def main():
     logger.info(args.dataset, 'training started', time.ctime())
-    train_xs, train_ys, train_ycov = get_xs_ys_time(data, data_time, 'train')
-    logger.info('Train xs.shape ys.shape, ycov.shape', train_xs.shape, train_ys.shape, train_ycov.shape)
-    train_model(model_name, 'train', train_xs, train_ys, train_ycov, adj)
+    train_xs, train_ys = get_xs_ys(data, 'train')
+    logger.info('Train xs.shape ys.shape', train_xs.shape, train_ys.shape)
+    train_model(model_name, 'train', train_xs, train_ys, adj)
     logger.info(args.dataset, 'training ended', time.ctime())
     
-    test_xs, test_ys, test_ycov = get_xs_ys_time(data, data_time, 'test')
-    logger.info('Test xs.shape, ys.shape, ycov.shape', test_xs.shape, test_ys.shape, test_ycov.shape)
-    test_model(model_name, 'test', test_xs, test_ys, test_ycov, adj)
+    test_xs, test_ys = get_xs_ys(data, 'test')
+    logger.info('Test xs.shape, ys.shape', test_xs.shape, test_ys.shape)
+    test_model(model_name, 'test', test_xs, test_ys, adj)
     logger.info(args.dataset, 'testing ended', time.ctime())
     logger.info('=' * 90)
 
