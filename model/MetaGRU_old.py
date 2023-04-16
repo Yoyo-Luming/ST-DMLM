@@ -11,23 +11,59 @@ class GRU_Cell(nn.Module):
         self.dim_hidden = dim_hidden
         self.dim_meta = dim_meta
 
-    def forward(self, x, state, Wx, Wh, b):
+        self.learner_wx = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(dim_meta, 32),
+                    nn.ReLU(inplace=True),
+                    nn.Linear(32, dim_in * dim_hidden),
+                )
+                for _ in range(3)
+            ]
+        )
+
+        self.learner_wh = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(dim_meta, 32),
+                    nn.ReLU(inplace=True),
+                    nn.Linear(32, dim_hidden * dim_hidden),
+                )
+                for _ in range(3)
+            ]
+        )
+
+        self.learner_b = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(dim_meta, 32),
+                    nn.ReLU(inplace=True),
+                    nn.Linear(32, dim_hidden),
+                )
+                for _ in range(3)
+            ]
+        )
+
+    def forward(self, x, state, x_meta):
         '''
         :param x: graph feature/signal - [B, N, C] or [B, B, H, H]
+        :param x_meta: meta - [B, N, H_M]
         :param state: previous hidden state - [B, N, H]
-        :param Wx: weights - [B, N, C, 3*H]
-        :param Wh: weights - [B, N, H, 3*H]
-        :param b: weights - [B, N, 1, 3*H]
         :return h: current hidden state - [B, N, H]
         '''
-        # print('x shape:', x.shape, state.shape, Wx.shape, Wh.shape, b.shape)
         if len(x.shape) == 3:
            x = torch.unsqueeze(x, -2) # B N 1 C
-        # print('x shape:', x.shape)
-
-        Wrx, Wzx, Wcx = torch.split(Wx, self.dim_hidden, dim=-1)
-        Wrh, Wzh, Wch = torch.split(Wh, self.dim_hidden, dim=-1)
-        br, bz, bc = torch.split(b, self.dim_hidden, dim=-1)     
+        num_nodes = x.shape[1] # N
+        batch_size = x.shape[0] # B
+        Wrx = self.learner_wx[0](x_meta).view(batch_size, num_nodes, self.dim_in, self.dim_hidden) # B N (C or H) H 
+        Wrh = self.learner_wh[0](x_meta).view(batch_size, num_nodes, self.dim_hidden, self.dim_hidden) # B N H H 
+        br = self.learner_b[0](x_meta).view( batch_size, num_nodes, 1, self.dim_hidden) # B N 1 H
+        Wzx = self.learner_wx[1](x_meta).view(batch_size, num_nodes, self.dim_in, self.dim_hidden)
+        Wzh = self.learner_wh[1](x_meta).view(batch_size, num_nodes, self.dim_hidden, self.dim_hidden)
+        bz = self.learner_b[1](x_meta).view(batch_size, num_nodes, 1, self.dim_hidden)
+        Wcx = self.learner_wx[2](x_meta).view(batch_size, num_nodes, self.dim_in, self.dim_hidden)
+        Wch = self.learner_wh[2](x_meta).view(batch_size, num_nodes, self.dim_hidden, self.dim_hidden)
+        bc = self.learner_b[2](x_meta).view(batch_size, num_nodes, 1, self.dim_hidden)       
 
         h = state.to(x.device)
         r = torch.sigmoid(x @ Wrx + h @ Wrh + br) # B N 1 H 
@@ -58,7 +94,7 @@ class Encoder(nn.Module):
                                             dim_hidden=self.dim_hidden[i],
                                             dim_meta=self.dim_meta))
             
-    def forward(self, x_seq, init_h, Wx, Wh, b):
+    def forward(self, x_seq, init_h, x_meta):
         '''
         :param x_seq: graph feature/signal - [B, T, N, C]
         :param init_h: init hidden state - [B, N, H]*num_layers
@@ -74,7 +110,7 @@ class Encoder(nn.Module):
             h = init_h[i]
             h_lst= []
             for t in range(seq_len):
-                h = self.cell_list[i](current_inputs[:, t, :, :], h, Wx, Wh, b) # B N H
+                h = self.cell_list[i](current_inputs[:, t, :, :], h, x_meta) # B N H
                 h_lst.append(h)
             output_h.append(h)
             current_inputs = torch.stack(h_lst, dim=1) # [B, T, N, H]
@@ -109,7 +145,7 @@ class Decoder(nn.Module):
                                             dim_hidden=self.dim_hidden[i],
                                             dim_meta=self.dim_meta))
     
-    def forward(self, x_t, h, Wx, Wh, b):
+    def forward(self, x_t, h, x_meta):
         '''
         :param x_t: graph feature/signal - [B, N, C]
         :param h: previous hidden state from the last encoder cell - [B, N, H]*num_layers
@@ -120,7 +156,7 @@ class Decoder(nn.Module):
         current_inputs = x_t # B N C
         h_lst= []
         for i in range(self.num_layers):
-            h_t = self.cell_list[i](current_inputs, h[i], Wx, Wh, b)
+            h_t = self.cell_list[i](current_inputs, h[i], x_meta)
             h_lst.append(h_t)
             current_inputs = h_t
         output = current_inputs 
@@ -134,7 +170,7 @@ class Decoder(nn.Module):
     
 
 class MetaGRU(nn.Module):
-    def __init__(self, device, num_nodes, input_dim, output_dim, learner_hidden_dim, meta_dim, horizon, rnn_units, num_layers=1, cl_decay_steps=2000, use_curriculum_learning=True):
+    def __init__(self, device, num_nodes, input_dim, output_dim, meta_dim, horizon, rnn_units, num_layers=1, cl_decay_steps=2000, use_curriculum_learning=True):
         super(MetaGRU, self).__init__()
         self.device = device
         self.num_nodes = num_nodes
@@ -149,24 +185,6 @@ class MetaGRU(nn.Module):
         self.cl_decay_steps = cl_decay_steps
         self.use_curriculum_learning = use_curriculum_learning
 
-        self.learner_wx = nn.Sequential(
-            nn.Linear(self.meta_dim, learner_hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(learner_hidden_dim, 3 * input_dim * rnn_units),
-        )
-
-        self.learner_wh = nn.Sequential(
-            nn.Linear(self.meta_dim, learner_hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(learner_hidden_dim, 3 * rnn_units * rnn_units),
-        )
-
-        self.learner_b = nn.Sequential(
-            nn.Linear(self.meta_dim, learner_hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(learner_hidden_dim, 3 * rnn_units),
-        )
-
         self.encoder = Encoder(num_nodes=self.num_nodes, dim_in=self.input_dim, dim_hidden=self.rnn_units, dim_meta= self.meta_dim, num_layers=self.num_layers)
         self.decoder = Decoder(num_nodes=self.num_nodes, dim_out=self.input_dim, dim_hidden=self.decoder_dim, dim_meta= self.meta_dim, num_layers=self.num_layers)
         self.proj = nn.Sequential(nn.Linear(self.decoder_dim, self.output_dim))
@@ -178,24 +196,15 @@ class MetaGRU(nn.Module):
         # x - [B, T, N, C]  x_meta - [N, H_M]
         batch_size = x.shape[0]
         x_meta = x_meta.expand(batch_size,self.num_nodes, self.meta_dim) # B N H_M
-        Wx = self.learner_wx(x_meta).view(
-            batch_size, self.num_nodes, self.input_dim, 3 * self.rnn_units
-        )
-        Wh = self.learner_wh(x_meta).view(
-            batch_size, self.num_nodes, self.rnn_units, 3 * self.rnn_units
-        )
-        b = self.learner_b(x_meta).view(
-            batch_size, self.num_nodes, 1, 3 * self.rnn_units
-        )
         init_h = None
 
-        h_lst = self.encoder(x, init_h, Wx, Wh, b) 
+        h_lst = self.encoder(x, init_h, x_meta) 
 
         go = torch.zeros((x.shape[0], x.shape[2], x.shape[3]),
                                 device=x.device)  # original initialization [B N C]
         out = list()
         for t in range(self.horizon):
-            h_de, h_lst = self.decoder(go, h_lst, Wx, Wh, b)
+            h_de, h_lst = self.decoder(go, h_lst, x_meta)
             go = self.proj(torch.squeeze(h_de)) # 当Batchsize为 1 时 会将那当Batchsize那一维去掉，需要手动加回
             if batch_size == 1:
                 go = torch.unsqueeze(go, 0) # B N 1 C

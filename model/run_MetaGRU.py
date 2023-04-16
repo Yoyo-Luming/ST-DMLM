@@ -66,8 +66,8 @@ def print_params(model):
     return
 
 def get_model(mode):
-    model = MetaGRU(device=args.gpu, num_nodes=args.num_nodes, input_dim=args.input_dim, output_dim=args.output_dim, meta_dim=args.meta_dim, horizon=args.horizon, 
-                    rnn_units=args.rnn_units, num_layers=args.num_rnn_layers, 
+    model = MetaGRU(device=args.gpu, num_nodes=args.num_nodes, input_dim=args.input_dim, output_dim=args.output_dim, meta_dim=args.meta_dim, 
+                    horizon=args.horizon, rnn_units=args.rnn_units, num_layers=args.num_rnn_layers, learner_hidden_dim = 32,
                     cl_decay_steps=args.cl_decay_steps, use_curriculum_learning=args.use_curriculum_learning).to(device)
     if mode == 'train':
         # summary(model, [(args.seq_len, args.num_nodes, args.input_dim)], device=device)   
@@ -254,6 +254,7 @@ logger.info('seq_len', args.seq_len)
 logger.info('horizon', args.horizon)
 logger.info('input_dim', args.input_dim)
 logger.info('output_dim', args.output_dim)
+logger.info('meta_dim', args.meta_dim)
 logger.info('num_rnn_layers', args.num_rnn_layers)
 logger.info('rnn_units', args.rnn_units)
 logger.info('max_diffusion_step', args.max_diffusion_step)
